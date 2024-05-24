@@ -5,7 +5,7 @@ This project is heavily inspired `croc` and `qft`.
 
 ## Demo
 
-https://github.com/darmiel/nudge-ngx/assets/71837281/6ee72f84-1e21-410a-b32e-3af08d8f404b
+https://github.com/darmiel/nudge-ngx/assets/71837281/9c9bbdbd-b383-45cb-ad7b-383bbb0176b3
 
 ## Usage
 
