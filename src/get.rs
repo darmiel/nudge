@@ -1,13 +1,19 @@
+use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::io::{Write};
+use std::net::{Ipv4Addr, UdpSocket};
 
 use clap::Parser;
 use console::style;
+use dialoguer::Confirm;
+use dialoguer::theme::ColorfulTheme;
 use indicatif::ProgressBar;
 
 use crate::error::NudgeError;
+use crate::models;
+use crate::passphrase::Passphrase;
 use crate::reliable_udp::ReliableUdpSocket;
-use crate::utils::{current_unix_millis, perform_hole_punching};
+use crate::utils::{current_unix_millis, init_socket, receive_and_parse_and_expect, serialize_and_send};
 use crate::utils::{DEFAULT_RELAY_HOST, DEFAULT_RELAY_PORT, DEFAULT_BITRATE};
 
 #[derive(Parser, Debug)]
@@ -28,6 +34,9 @@ pub struct Get {
 
     #[clap(short, long, default_value = DEFAULT_BITRATE)]
     bitrate: u32,
+
+    #[clap(short, long, default_value = "false")]
+    force: bool,
 }
 
 impl Get {
@@ -39,21 +48,65 @@ impl Get {
             .create(true)
             .open(&self.out_file)?;
 
+        // Connect to the relay server
+        let relay_address = format!("{}:{}", self.relay_host, self.relay_port);
+        println!(
+            "{} Connecting to relay-server: {}...",
+            style("[1/4]").bold().dim(),
+            relay_address
+        );
+        let local_bind_address = (Ipv4Addr::from(0u32), 0);
+        let local_socket = UdpSocket::bind(local_bind_address)?;
+        local_socket.connect(relay_address)?;
+
+        // RECV_REQ
+        let passphrase = Passphrase(Cow::Owned(self.passphrase.clone()));
+        serialize_and_send(&local_socket, "RECV_REQ", &models::FileReceiveRequestPayload {
+            passphrase: passphrase.clone(),
+        })?;
+
+        let recv_ack: models::FileInfo = receive_and_parse_and_expect(&local_socket, "RECV_ACK")?;
+
+        println!(
+            "{} {} by {} [{}]",
+            style("(INFO)").bold().green(),
+            style(&recv_ack.file_name).yellow(),
+            style(&recv_ack.sender_host).cyan(),
+            humansize::format_size(recv_ack.file_size, humansize::DECIMAL)
+        );
+
+        // ask if we really want to download the file
+        if !self.force && !Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Do you want to download the file?")
+            .interact()
+            .unwrap()
+        {
+            println!("Nevermind then :(");
+            return Ok(());
+        }
+
+        println!("Requesting sender to connect to us...");
+
+        // ask the sender to connect to us
+        serialize_and_send(&local_socket, "RECV_ACC", &models::FileReceiveAcceptPayload {
+            passphrase,
+            file_hash: recv_ack.file_hash,
+        })?;
+
+        println!("Connecting to: {}", recv_ack.sender_addr);
+        local_socket.connect(recv_ack.sender_addr)?;
+
+        println!("Initializing socket connection...");
+        init_socket(&local_socket)?;
+
+        println!("Ready to receive data!");
+
         // Initializing a buffer with size equal to the bitrate
         let buffer: Vec<u8> = vec![0; self.bitrate as usize];
         let buffer: &[u8] = buffer.leak();
 
-        let relay_address = format!("{}:{}", self.relay_host, self.relay_port);
-        println!(
-            "{} Connecting to relay-server at {} and performing hole punch...",
-            style("[1/3]").bold().dim(),
-            relay_address
-        );
-        let connection = perform_hole_punching(relay_address, self.passphrase.clone())?;
-
         // Wrapping the connection with SafeReadWrite for safe reading and writing
-        let mut safe_connection = ReliableUdpSocket::new(connection);
-
+        let mut safe_connection = ReliableUdpSocket::new(local_socket);
 
         // Reading the length of the data from the sender
         println!(

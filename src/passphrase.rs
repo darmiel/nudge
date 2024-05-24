@@ -1,14 +1,15 @@
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
 use rand::{Rng, thread_rng};
+use serde::{Deserialize, Serialize};
 use crate::error::Result;
 
 /// A passphrase generator that can generate passphrases
 pub struct PassphraseGenerator(Vec<String>);
 
 // A passphrase, e.g. "correct-horse-battery"
-#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Passphrase<'a>(Cow<'a, str>);
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Serialize, Deserialize)]
+pub struct Passphrase<'a>(pub Cow<'a, str>);
 
 impl<'a> From<&'a str> for Passphrase<'a> {
     fn from(s: &'a str) -> Self {

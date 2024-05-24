@@ -11,11 +11,29 @@ pub enum NudgeError {
     #[error("UTF-8 conversion error")]
     Utf8Error(#[from] std::string::FromUtf8Error),
 
+    #[error("UTF-8 conversion error (2)")]
+    Utf8Error2(#[from] std::str::Utf8Error),
+
     #[error("Buffer size exceeds the maximum allowed limit of 65532 bytes. Received: {0} bytes.")]
     BufferSizeLimitExceeded(usize),
 
     #[error("Data packet exceeds the maximum allowed limit of 65532 bytes. Received: {0} bytes.")]
     DataPacketLimitExceeded(usize),
+
+    #[error("Failed to generate passphrase")]
+    PassphraseGenerationError,
+
+    #[error("Passphrase not found")]
+    PassphraseNotFound,
+
+    #[error("Failed to parse JSON")]
+    JsonParseError(#[from] serde_json::Error),
+
+    #[error("Server returned error: {0}")]
+    ServerError(String),
+
+    #[error("Expected {0}, but received {1}")]
+    ReceiveExpectationNotMet(String, String),
 }
 
 pub type Result<T> = std::result::Result<T, NudgeError>;

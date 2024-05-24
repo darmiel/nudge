@@ -1,15 +1,17 @@
 use std::fs::File;
 use std::io::Read;
+use std::net::{Ipv4Addr, UdpSocket};
 
 use clap::Parser;
 use console::style;
 use indicatif::ProgressBar;
 
+use crate::{models, utils};
 use crate::error::NudgeError;
-use crate::passphrase::PassphraseGenerator;
+use crate::models::{FileSendAckPayload, SenderConnectToReceiverPayload};
 use crate::reliable_udp::ReliableUdpSocket;
-use crate::utils::{current_unix_millis, perform_hole_punching};
-use crate::utils::{DEFAULT_BITRATE, DEFAULT_RELAY_HOST, DEFAULT_RELAY_PORT};
+use crate::utils::{DEFAULT_BITRATE, DEFAULT_RELAY_HOST, DEFAULT_RELAY_PORT, receive_and_parse_and_expect, serialize_and_send};
+use crate::utils::current_unix_millis;
 
 #[derive(Parser, Debug)]
 pub struct Send {
@@ -29,38 +31,63 @@ pub struct Send {
 }
 
 impl Send {
+
     pub fn run(&self) -> Result<(), NudgeError> {
         // check if the file exists and open it
         let mut file = File::open(&self.file)?;
+        let file_name = &self.file.split('/').last().unwrap();
+        let file_length = file.metadata()?.len();
 
-        // generate a random passphrase
-        let passphrase_generator = PassphraseGenerator::new()?;
-        let passphrase = passphrase_generator.generate()
-            .expect("Could not generate passphrase");
-
-        println!(
-            "{} Generated passphrase: {}",
-            style("[1/4]").bold().dim(),
-            passphrase
-        );
-
+        // Connect to relay server
         let relay_address = format!("{}:{}", self.relay_host, self.relay_port);
         println!(
-            "{} Connecting to relay-server at {} and performing hole punch...",
+            "{} Connecting to relay-server: {}...",
             style("[2/4]").bold().dim(),
             relay_address
         );
-        let connection = perform_hole_punching(relay_address, passphrase.to_string())?;
+        let local_bind_address = (Ipv4Addr::from(0u32), 0);
+        let local_socket = UdpSocket::bind(&local_bind_address)?;
+        local_socket.connect(relay_address)?;
+
+        // SEND_REQ
+        serialize_and_send(&local_socket, "SEND_REQ", &models::FileSendRequestPayload {
+            sender_host: "daniel".to_string(), // TODO: change me
+            file_size: file_length,
+            file_hash: "hash".to_string(), // TODO: change me, let the user disable the hash
+            file_name: file_name.to_string(),
+        })?;
+
+        // SEND_ACK
+        let send_ack: FileSendAckPayload = receive_and_parse_and_expect(
+            &local_socket,
+            "SEND_ACK",
+        )?;
+
+        println!("Received Passphrase: {}", send_ack.passphrase);
+        println!("Waiting for connection request...");
+
+        let conn_req: SenderConnectToReceiverPayload = receive_and_parse_and_expect(
+            &local_socket,
+            "CONNECT",
+        )?;
+
+        println!("Connecting to: {}", conn_req.receiver_addr);
+        local_socket.connect(conn_req.receiver_addr)?;
+
+        println!("Initializing socket connection...");
+        utils::init_socket(&local_socket)?;
+
+        println!("Ready to send data!");
 
         // Create a buffer with size based on the bitrate
         let buffer: Vec<u8> = vec![0; self.bitrate as usize];
         let mut buffer = buffer.leak();
 
         // Create a SafeReadWrite wrapper for the connection
-        let mut safe_connection = ReliableUdpSocket::new(connection);
+        let mut safe_connection = ReliableUdpSocket::new(local_socket);
         let mut bytes_sent: u64 = 0;
 
-        let file_length = file.metadata()?.len();
+
         println!(
             "{} Sending file size ({} bytes) to peer...",
             style("[3/4]").bold().dim(),
