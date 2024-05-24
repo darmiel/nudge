@@ -1,10 +1,12 @@
-use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::net::UdpSocket;
 use std::thread;
+use std::time::Duration;
 use std::time::SystemTime;
 
-use std::time::Duration;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
-use crate::error::Result;
+use crate::error::{NudgeError, Result};
 
 pub const DEFAULT_RELAY_HOST: &'static str = "127.0.0.1";
 pub const DEFAULT_RELAY_PORT: &'static str = "4000";
@@ -18,35 +20,7 @@ pub fn current_unix_millis() -> u64 {
         .as_millis() as u64
 }
 
-/// Function to initiate a hole-punching process with the given address and passphrase
-pub fn perform_hole_punching(relay_address: String, passphrase: String) -> Result<UdpSocket> {
-    // Bind the socket to any available port on the local machine
-    let local_bind_address = (Ipv4Addr::from(0u32), 0);
-    let socket = UdpSocket::bind(&local_bind_address)?;
-
-    // Connect the socket to the relay's address
-    socket.connect(relay_address)?;
-
-    // Prepare the buffer and send the passphrase to the relay
-    let mut buffer = [0u8; 200];
-    for i in 0..passphrase.len().min(200) {
-        buffer[i] = passphrase.as_bytes()[i];
-    }
-    socket.send(&buffer)?;
-    socket.recv(&mut buffer)?;
-
-    // Process the received data to extract the peer's bind address
-    let mut address_bytes = Vec::from(buffer);
-    address_bytes.retain(|&byte| byte != 0);
-    let peer_bind_address_str = String::from_utf8_lossy(&address_bytes).to_string();
-
-    // Convert the peer's bind address string to a SocketAddrV4
-    let peer_bind_address: SocketAddrV4 = peer_bind_address_str.parse()
-        .expect("Invalid peer address format");
-
-    // Reconnect the socket to the newly parsed peer address
-    socket.connect(peer_bind_address)?;
-
+pub fn init_socket(socket: &UdpSocket) -> Result<()> {
     // Set socket read and write timeouts
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     socket.set_write_timeout(Some(Duration::from_secs(1)))?;
@@ -58,7 +32,8 @@ pub fn perform_hole_punching(relay_address: String, passphrase: String) -> Resul
     for _ in 0..40 {
         let start_time = current_unix_millis();
         let _ = socket.send(&[0]);
-        thread::sleep(Duration::from_millis((50 - (current_unix_millis() - start_time)).max(0)));
+        thread::sleep(Duration::from_millis((50 - (current_unix_millis() - start_time))
+            .max(0)));
     }
 
     // Wait for the connection to be established
@@ -77,13 +52,45 @@ pub fn perform_hole_punching(relay_address: String, passphrase: String) -> Resul
     while receive_result.is_ok() && receive_result.unwrap() == 2 {
         receive_result = socket.recv(&mut [0, 0]);
     }
-    Ok(socket)
+
+    Ok(())
+}
+
+pub fn serialize_and_send(connection: &UdpSocket, prefix: &str, data: &impl Serialize) -> std::result::Result<(), NudgeError> {
+    let serialized_data = serde_json::to_string(data)?;
+    let message = format!("{} {}", prefix, serialized_data);
+    connection.send(message.as_bytes())?;
+    Ok(())
+}
+
+pub fn receive_and_parse_and_expect<T: DeserializeOwned>(connection: &UdpSocket, expected_prefix: &str) -> std::result::Result<T, NudgeError> {
+    let mut buffer = [0u8; 1024];
+    connection.recv(&mut buffer)?;
+
+    let mut buffer_vec = buffer.to_vec();
+    buffer_vec.retain(|&byte| byte != 0);
+
+    let message = String::from_utf8_lossy(&buffer_vec);
+    if message.starts_with("ERROR ") {
+        return Err(NudgeError::ServerError(message.to_string()));
+    }
+
+    let prefix = message.split_whitespace().next().unwrap();
+    if prefix != expected_prefix {
+        return Err(NudgeError::ReceiveExpectationNotMet(
+            expected_prefix.to_string(),
+            prefix.to_string(),
+        ));
+    }
+
+    // remove leading/trailing whitespace
+    let part = message[expected_prefix.len()..].trim();
+    Ok(serde_json::from_str(part)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::UdpSocket;
 
     #[test]
     fn test_current_unix_millis() {
@@ -99,31 +106,4 @@ mod tests {
         assert!(millis >= before && millis <= after, "The current_unix_millis function should return the correct time in milliseconds.");
     }
 
-    #[test]
-    fn test_perform_hole_punching_invalid_address() {
-        let relay_address = "256.256.256.256:0".to_string(); // invalid IP address
-        let passphrase = "test_passphrase".to_string();
-        let result = perform_hole_punching(relay_address, passphrase);
-        assert!(result.is_err(), "Expected error with invalid relay address.");
-    }
-
-    #[test]
-    fn test_perform_hole_punching_connection() -> Result<()> {
-        let server_socket = UdpSocket::bind("127.0.0.1:0")?;
-        let server_address = server_socket.local_addr()?;
-        let relay_address = server_address.to_string();
-
-        let peer_address = "127.0.0.1:12345";
-        thread::spawn(move || {
-            let mut buf = [0; 200];
-            let (_, src) = server_socket.recv_from(&mut buf).unwrap();
-            server_socket.send_to(peer_address.as_bytes(), src).unwrap();
-        });
-
-        let passphrase = "test_passphrase".to_string();
-        let socket = perform_hole_punching(relay_address, passphrase)?;
-
-        assert_eq!(socket.peer_addr()?.to_string(), "127.0.0.1:12345", "Socket should be connected to the correct peer address.");
-        Ok(())
-    }
 }

@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use error::NudgeError;
+use error::Result;
 
 // lib
 mod error;
@@ -11,6 +11,7 @@ mod reliable_udp;
 mod server;
 mod send;
 mod get;
+mod models;
 
 #[derive(Parser, Debug)]
 #[clap(version = "0.1", author = "darmiel <asdf@qwer.tz>")]
@@ -22,16 +23,19 @@ struct Opts {
 
 #[derive(Subcommand, Debug)]
 enum SubCommand {
-    Serve(server::RelayServer),
+    Serve(server::RelayServerOpts),
     Send(send::Send),
     Get(get::Get),
 }
 
-fn main() -> Result<(), NudgeError> {
+fn main() -> Result<()> {
     let opts = Opts::parse();
 
     match opts.subcmd {
-        SubCommand::Serve(server) => server.run(),
+        SubCommand::Serve(server_opts) => {
+            let mut server = server::RelayServer::new(server_opts)?;
+            Ok(server.run().expect("Failed to start server"))
+        }
         SubCommand::Send(send) => send.run(),
         SubCommand::Get(get) => get.run(),
     }
