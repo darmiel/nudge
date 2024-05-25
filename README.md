@@ -1,7 +1,8 @@
 # Nudge
 
-Nudge is a small cli-tool for transferring files between computers. 
-This project is heavily inspired `croc` and `qft`.
+Nudge is a small CLI tool for sending data from one computer to another via UDP. 
+The project was strongly inspired by the `croc` and `qft` projects.
+The aim is to enable simple peer-to-peer data transfer, so that the data is not sent via a central server, but transferred directly peer-to-peer,
 
 ## Demo
 
@@ -11,8 +12,9 @@ https://github.com/darmiel/nudge-ngx/assets/71837281/9c9bbdbd-b383-45cb-ad7b-383
 
 ### Server
 
-The server is the central component of the Nudge system. 
-It manages the connections between peers and facilitates the file transfer process.
+The server acts as a relay server. 
+This server should be publicly accessible (i.e. by every peer). 
+The relay server manages the communication and connects the peers with each other.
 
 ```console
 $ nudge serve
@@ -51,7 +53,7 @@ Download file with passphrase: sagem-tribal-israeli
 >   -x, --relay-host <RELAY_HOST>          [default: 127.0.0.1]
 >   -y, --relay-port <RELAY_PORT>          [default: 4000]
 >   -d, --delay <DELAY>                    [default: 500]
->   -b, --bitrate <BITRATE>                [default: 256]
+>   -c, --chunk-size <CHUNK_SIZE>          [default: 256]
 >   -h, --help                             Print help
 > ```
 
@@ -76,7 +78,7 @@ $ nudge get -o file.txt sagem-tribal-israeli
 >   -x, --relay-host <RELAY_HOST>          [default: 127.0.0.1]
 >   -y, --relay-port <RELAY_PORT>          [default: 4000]
 >   -d, --delay <DELAY>                    [default: 500]
->   -b, --bitrate <BITRATE>                [default: 256]
+>   -c, --chunk-size <CHUKN_SIZE>          [default: 256]
 >   -h, --help                             Print help
 > ```
 
