@@ -43,6 +43,9 @@ pub enum NudgeError {
 
     #[error("Hash mismatch! Expected: {0}, Received: {1}")]
     HashMismatch(String, String),
+
+    #[error("Unknown command")]
+    UnknownCommand,
 }
 
 pub type Result<T> = std::result::Result<T, NudgeError>;

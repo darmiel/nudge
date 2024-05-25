@@ -25,6 +25,7 @@ fn main() -> Result<()> {
         } else {
             log::Level::Info.as_str()
         })
+        .time_format("%d-%m/%H:%M:%S")
         .output_console()
         .build();
     simple_log::new(log_config).expect("Failed to initialize logger");
