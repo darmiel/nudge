@@ -29,7 +29,7 @@ impl PassphraseGenerator {
     /// Create a new PassphraseGenerator
     /// It will read the file `english-medium.txt` and store the lines in a vector
     pub fn new() -> Result<Self> {
-        let content = include_str!("english-medium.txt");
+        let content = include_str!("../english-medium.txt");
         let lines: Vec<String> = content.lines().map(str::to_owned).collect();
         Ok(PassphraseGenerator(lines))
     }

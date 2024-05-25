@@ -1,19 +1,22 @@
 use std::fmt::{Display, Formatter};
 use std::fs::File;
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek };
 use std::net::UdpSocket;
 use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
+
 use console::style;
 use dialoguer::theme::ColorfulTheme;
 use gethostname::gethostname;
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
-
+use indicatif::{ProgressBar, ProgressStyle};
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
-use serde::{Serialize, Deserialize};
 
 use crate::error::{NudgeError, Result};
+
+pub mod passphrase;
+pub mod reliable_udp;
 
 pub const DEFAULT_RELAY_HOST: &'static str = "127.0.0.1";
 pub const DEFAULT_RELAY_PORT: &'static str = "4000";
