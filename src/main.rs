@@ -1,44 +1,24 @@
 #[macro_use]
 extern crate simple_log;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser};
 use simple_log::LogConfigBuilder;
 
-use error::Result;
+use crate::error::Result;
+use crate::commands::{SubCommand, server_command, send_command, get_command};
 
 
 // lib
 mod error;
 mod utils;
-mod passphrase;
-mod reliable_udp;
 
 // subcommands
-mod server;
-mod send;
-mod get;
+mod commands;
 mod models;
 
-#[derive(Parser, Debug)]
-#[clap(version = "0.1", author = "darmiel <asdf@qwer.tz>")]
-// #[clap(setting = AppSettings::SubcommandRequiredElseHelp)]
-struct Opts {
-    #[clap(short, long, default_value = "false")]
-    verbose: bool,
-
-    #[clap(subcommand)]
-    subcmd: SubCommand,
-}
-
-#[derive(Subcommand, Debug)]
-enum SubCommand {
-    Serve(server::RelayServerOpts),
-    Send(send::Send),
-    Get(get::Get),
-}
 
 fn main() -> Result<()> {
-    let opts = Opts::parse();
+    let opts = commands::RootOpts::parse();
 
     // init logger
     let log_config = LogConfigBuilder::builder()
@@ -51,13 +31,16 @@ fn main() -> Result<()> {
         .build();
     simple_log::new(log_config).expect("Failed to initialize logger");
 
-    match match opts.subcmd {
+    match match &opts.subcmd {
         SubCommand::Serve(server_opts) => {
-            let mut server = server::RelayServer::new(server_opts)?;
-            Ok(server.run().expect("Failed to start server"))
+            server_command::run(&opts, &server_opts)
         }
-        SubCommand::Send(send) => send.run(),
-        SubCommand::Get(get) => get.run(),
+        SubCommand::Send(send_opts) => {
+            send_command::run(&opts, &send_opts)
+        }
+        SubCommand::Get(get_opts) => {
+            get_command::run(&opts, &get_opts)
+        }
     } {
         Ok(_) => Ok(()),
         Err(e) => {

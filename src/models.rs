@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
-use crate::passphrase::Passphrase;
+use crate::utils::passphrase::Passphrase;
 use crate::utils::AnonymousString;
 
 #[derive(Debug, Serialize, Deserialize)]
