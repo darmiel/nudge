@@ -34,6 +34,9 @@ pub enum NudgeError {
 
     #[error("Expected {0}, but received {1}")]
     ReceiveExpectationNotMet(String, String),
+
+    #[error("Cannot get hostname")]
+    HostnameError,
 }
 
 pub type Result<T> = std::result::Result<T, NudgeError>;

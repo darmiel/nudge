@@ -5,7 +5,7 @@ use clap::Parser;
 
 use crate::error::{NudgeError, Result};
 use crate::passphrase::{Passphrase, PassphraseGenerator};
-use crate::utils::current_unix_millis;
+use crate::utils::{AnonymousString, current_unix_millis};
 use crate::models::*;
 
 #[derive(Parser, Debug)]
@@ -45,30 +45,34 @@ impl RelayServer {
 
         loop {
             let (len, addr) = listener.recv_from(&mut buf)?;
-            println!("Received {} bytes from {}", len, addr);
+            println!("\nReceived {} bytes from {}", len, addr);
+            println!("Received: {:?}", std::str::from_utf8(&buf[..len])?);
 
             let received_str = std::str::from_utf8(&buf[..len])?;
-            if received_str.starts_with("SEND_REQ ") {
-                match self.handle_send_request(&listener, &addr, &received_str[9..]) {
-                    Ok(_) => println!("Successfully handled SEND_REQ"),
-                    Err(e) => println!("Failed to handle SEND_REQ: {}", e),
+
+            // Sender -> Server; Request Passphrase
+            if received_str.starts_with("S2X_RP ") {
+                match self.handle_sender_request_passphrase_message(&listener, &addr, &received_str[7..]) {
+                    Ok(_) => println!("Successfully handled S2X_RP"),
+                    Err(e) => println!("Failed to handle S2X_RP: {}", e),
                 }
                 continue;
             }
 
-            if received_str.starts_with("RECV_REQ ") {
-                match self.handle_receive_request(&listener, &addr, &received_str[9..]) {
-                    Ok(_) => println!("Successfully handled RECEIVE_REQ"),
-                    Err(e) => println!("Failed to handle RECEIVE_REQ: {}", e),
+            // Receiver -> Server; Request File Info
+            if received_str.starts_with("R2X_RFI ") {
+                match self.handle_receiver_request_file_info(&listener, &addr, &received_str[8..]) {
+                    Ok(_) => println!("Successfully handled R2X_RFI"),
+                    Err(e) => println!("Failed to handle R2X_RFI: {}", e),
                 }
                 continue;
             }
 
             // send receiver address to sender
-            if received_str.starts_with("RECV_ACC ") {
-                match self.handle_receive_accept(&listener, &addr, &received_str[9..]) {
-                    Ok(_) => println!("Successfully handled RECEIVE_ACCEPT"),
-                    Err(e) => println!("Failed to handle RECEIVE_ACCEPT: {}", e),
+            if received_str.starts_with("R2X_RSC ") {
+                match self.handle_receiver_accept(&listener, &addr, &received_str[8..]) {
+                    Ok(_) => println!("Successfully handled R2X_RSC"),
+                    Err(e) => println!("Failed to handle R2X_RSC: {}", e),
                 }
                 continue;
             }
@@ -76,8 +80,8 @@ impl RelayServer {
     }
 
     /// Handle a SEND_REQ packet
-    fn handle_send_request(&mut self, listener: &UdpSocket, addr: &SocketAddr, payload_str: &str) -> Result<()> {
-        let payload: FileSendRequestPayload = serde_json::from_str(payload_str)?;
+    fn handle_sender_request_passphrase_message(&mut self, listener: &UdpSocket, addr: &SocketAddr, payload_str: &str) -> Result<()> {
+        let payload: S2XRequestPassphraseMessage = serde_json::from_str(payload_str)?;
 
         let file_info = FileInfo {
             file_size: payload.file_size,
@@ -92,54 +96,59 @@ impl RelayServer {
             .ok_or(NudgeError::PassphraseGenerationError)?;
 
         self.client_map.insert(passphrase.clone(), file_info);
-        self.send_send_ack(listener, addr, passphrase)
+        self.send_passphrase_to_sender(listener, addr, passphrase)
     }
 
     /// Send a SEND_ACK packet
-    fn send_send_ack(&self, listener: &UdpSocket, addr: &SocketAddr, passphrase: Passphrase<'static>) -> Result<()> {
-        let response_payload = FileSendAckPayload { passphrase };
-        let response = format!("SEND_ACK {}\n", serde_json::to_string(&response_payload)?);
+    fn send_passphrase_to_sender(&self, listener: &UdpSocket, addr: &SocketAddr, passphrase: Passphrase<'static>) -> Result<()> {
+        let response_payload = X2SPassphraseProvidedMessage { passphrase };
+        let response = format!("X2S_PPM {}\n", serde_json::to_string(&response_payload)?);
         listener.send_to(response.as_bytes(), addr)?;
 
         Ok(())
     }
 
-    fn handle_receive_request(&mut self, listener: &UdpSocket, addr: &SocketAddr, payload_str: &str) -> Result<()> {
-        let payload: FileReceiveRequestPayload = serde_json::from_str(payload_str)?;
+    fn handle_receiver_request_file_info(&mut self, listener: &UdpSocket, addr: &SocketAddr, payload_str: &str) -> Result<()> {
+        let payload: R2XRequestFileInfoMessage = serde_json::from_str(payload_str)?;
 
         if let Some(file_info) = self.client_map.get(&payload.passphrase) {
-            self.send_receive_ack(listener, addr, file_info)
+            self.send_file_info_to_receiver(listener, addr, file_info)
         } else {
             Err(NudgeError::PassphraseNotFound)
         }
     }
 
-    fn send_receive_ack(&self, listener: &UdpSocket, addr: &SocketAddr, file_info: &FileInfo) -> Result<()> {
-        let response = format!("RECV_ACK {}\n", serde_json::to_string(file_info)?);
+    fn send_file_info_to_receiver(&self, listener: &UdpSocket, addr: &SocketAddr, file_info: &FileInfo) -> Result<()> {
+        let response = format!("X2R_AFI {}\n", serde_json::to_string(file_info)?);
         listener.send_to(response.as_bytes(), addr)?;
         Ok(())
     }
 
-    fn handle_receive_accept(&mut self, listener: &UdpSocket, addr: &SocketAddr, payload_str: &str) -> Result<()> {
-        let payload: FileReceiveAcceptPayload = serde_json::from_str(payload_str)?;
+    fn handle_receiver_accept(&mut self,
+                              listener: &UdpSocket,
+                              addr: &SocketAddr,
+                              payload_str: &str
+    ) -> Result<()> {
+        let payload: R2XRequestSenderConnectionMessage = serde_json::from_str(payload_str)?;
 
-        if let Some(file_info) = self.client_map.get(&payload.passphrase) {
-            // make sure the file hash matches
-            if file_info.file_hash == payload.file_hash {
-                println!(
-                    "File hash matches, sending sender ({}) to receiver ({})",
-                    file_info.sender_addr, addr
-                );
+        let file_info = match self.client_map.get_mut(&payload.passphrase) {
+            Some(file_info) => file_info,
+            None => return Err(NudgeError::PassphraseNotFound),
+        };
 
-                // Clone the necessary info before removing the entry
-                let sender_addr = file_info.sender_addr.clone();
+        // make sure the file hash matches
+        if file_info.file_hash == payload.file_hash {
+            println!(
+                "File hash matches, sending sender ({}) to receiver ({})",
+                file_info.sender_addr, addr
+            );
 
-                self.client_map.remove(&payload.passphrase);
+            // Clone the necessary info before removing the entry
+            let sender_addr = file_info.sender_addr.clone();
 
-                self.send_sender_connect_to_receiver(listener, &sender_addr, addr)
-            } else {
-                Err(NudgeError::PassphraseNotFound)
-            }
+            self.client_map.remove(&payload.passphrase);
+
+            self.send_sender_connect_to_receiver(listener, &sender_addr, addr, payload.receiver_host)
         } else {
             Err(NudgeError::PassphraseNotFound)
         }
@@ -149,9 +158,13 @@ impl RelayServer {
                                        listener: &UdpSocket,
                                        sender_addr: &SocketAddr,
                                        receiver_addr: &SocketAddr,
+                                       sender_host: AnonymousString,
     ) -> Result<()> {
-        let response_payload = SenderConnectToReceiverPayload { receiver_addr: *receiver_addr };
-        let response = format!("CONNECT {}\n", serde_json::to_string(&response_payload)?);
+        let response_payload = X2SSenderConnectToReceiverMessage {
+            receiver_addr: *receiver_addr,
+            receiver_host: sender_host,
+        };
+        let response = format!("X2S_SCON {}\n", serde_json::to_string(&response_payload)?);
         listener.send_to(response.as_bytes(), sender_addr)?;
 
         Ok(())

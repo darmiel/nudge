@@ -7,13 +7,14 @@ use clap::Parser;
 use console::style;
 use dialoguer::Confirm;
 use dialoguer::theme::ColorfulTheme;
+use humansize::{DECIMAL, format_size};
 use indicatif::ProgressBar;
 
 use crate::error::NudgeError;
-use crate::models;
+use crate::models::{FileInfo, R2XRequestSenderConnectionMessage, R2XRequestFileInfoMessage};
 use crate::passphrase::Passphrase;
 use crate::reliable_udp::ReliableUdpSocket;
-use crate::utils::{current_unix_millis, init_socket, receive_and_parse_and_expect, serialize_and_send};
+use crate::utils::{current_unix_millis, hide_or_get_hostname, init_socket, new_downloader_progressbar, question_theme, receive_and_parse_and_expect, serialize_and_send};
 use crate::utils::{DEFAULT_RELAY_HOST, DEFAULT_RELAY_PORT, DEFAULT_CHUNK_SIZE};
 
 #[derive(Parser, Debug)]
@@ -37,45 +38,50 @@ pub struct Get {
 
     #[clap(short, long, default_value = "false")]
     force: bool,
+
+    /// If enabled, won't send the hostname to the sender
+    #[clap(long, default_value = "false")]
+    hide_hostname: bool,
 }
+
 
 impl Get {
     pub fn run(&self) -> Result<(), NudgeError> {
-
-        // Connect to the relay server
-        let relay_address = format!("{}:{}", self.relay_host, self.relay_port);
-        println!(
-            "{} Connecting to relay-server: {}...",
-            style("[1/4]").bold().dim(),
-            relay_address
-        );
         let local_bind_address = (Ipv4Addr::from(0u32), 0);
-        let local_socket = UdpSocket::bind(local_bind_address)?;
-        local_socket.connect(relay_address)?;
+        debug!("Binding UDP socket to local address: {:?}", local_bind_address);
+        let socket = UdpSocket::bind(local_bind_address)?;
+
+        let relay_address = format!("{}:{}", self.relay_host, self.relay_port);
+        debug!("Connecting to relay-server: {}...", relay_address);
+        socket.connect(relay_address)?;
 
         // RECV_REQ
         let passphrase = Passphrase(Cow::Owned(self.passphrase.clone()));
-        serialize_and_send(&local_socket, "RECV_REQ", &models::FileReceiveRequestPayload {
+        debug!("Sending R2XRequestFileInfoMessage with passphrase: {}...", passphrase.0);
+        serialize_and_send(&socket, "R2X_RFI", &R2XRequestFileInfoMessage {
             passphrase: passphrase.clone(),
         })?;
 
-        let recv_ack: models::FileInfo = receive_and_parse_and_expect(&local_socket, "RECV_ACK")?;
+        debug!("Waiting for FileInfo...");
+        let recv_ack: FileInfo = receive_and_parse_and_expect(&socket, "X2R_AFI")?;
+        debug!("Received FileInfo: {:?}", recv_ack);
 
+        // display file information
         println!(
-            "{} {} by {} [{}]",
-            style("(INFO)").bold().green(),
+            "{} Meta: {} by {} [{}]",
+            style("[✔]").bold().green(),
             style(&recv_ack.file_name).yellow(),
             style(&recv_ack.sender_host).cyan(),
-            humansize::format_size(recv_ack.file_size, humansize::DECIMAL)
+            format_size(recv_ack.file_size, DECIMAL)
         );
 
         // ask if we really want to download the file
-        if !self.force && !Confirm::with_theme(&ColorfulTheme::default())
+        if !self.force && !Confirm::with_theme(&question_theme())
             .with_prompt("Do you want to download the file?")
             .interact()
             .unwrap()
         {
-            println!("Nevermind then :(");
+            println!("Cancelled by user.");
             return Ok(());
         }
 
@@ -87,42 +93,41 @@ impl Get {
             .open(&self.out_file)?;
         file.set_len(recv_ack.file_size)?;
 
-        println!("Requesting sender to connect to us...");
-
         // ask the sender to connect to us
-        serialize_and_send(&local_socket, "RECV_ACC", &models::FileReceiveAcceptPayload {
+        let hostname = hide_or_get_hostname(self.hide_hostname)?;
+        debug!(
+            "Requesting sender to connect to us ({}) via R2XRequestSenderConnectionMessage...",
+            hostname
+        );
+        serialize_and_send(&socket, "R2X_RSC", &R2XRequestSenderConnectionMessage {
             passphrase,
             file_hash: recv_ack.file_hash,
+            receiver_host: hostname,
         })?;
 
-        println!("Connecting to: {}", recv_ack.sender_addr);
-        local_socket.connect(recv_ack.sender_addr)?;
-
-        println!("Initializing socket connection...");
-        init_socket(&local_socket)?;
-
-        println!("Ready to receive data!");
-
-        // Initializing a buffer with size equal to the bitrate
-        let mut buffer: Vec<u8> = vec![0; self.chunk_size as usize];
-
-        // Wrapping the connection with SafeReadWrite for safe reading and writing
-        let mut safe_connection = ReliableUdpSocket::new(local_socket);
-
-        // Reading the length of the data from the sender
         println!(
-            "{} Reading file size...",
-            style("[2/3]").bold().dim()
+            "{} Connecting to {} ({})...",
+            style("[~]").bold().yellow(),
+            style(&recv_ack.sender_host).cyan(),
+            style(&recv_ack.sender_addr).dim()
         );
+        socket.connect(recv_ack.sender_addr)?;
+
+        debug!("Initializing socket connection...");
+        init_socket(&socket)?;
+        debug!("Ready to receive data!");
+
+        // wrap the socket in a "reliable udp socket"
+        let mut safe_connection = ReliableUdpSocket::new(socket);
 
         println!(
-            "{} Receiving {} bytes from peer in {} byte-chunks...",
-            style("[3/3]").bold().dim(),
-            recv_ack.file_size,
-            self.chunk_size
+            "{} Receiving {} (chunk-size: {})...",
+            style("[~]").bold().yellow(),
+            format_size(recv_ack.file_size, DECIMAL),
+            style(format_size(self.chunk_size, DECIMAL)).dim()
         );
 
-        let progress_bar = ProgressBar::new(recv_ack.file_size);
+        let progress_bar = new_downloader_progressbar(recv_ack.file_size);
 
         // Used for calculating the total time taken
         let start_time = current_unix_millis();
@@ -134,6 +139,8 @@ impl Get {
         let update_progress_rate = (1024 * 25) / self.chunk_size;
         let mut current_progress = 0;
 
+        let mut buffer: Vec<u8> = vec![0; self.chunk_size as usize];
+
         loop {
             let (read_buffer, bytes_read) = safe_connection.read(&mut buffer)?;
             if bytes_read == 0 {
@@ -141,7 +148,7 @@ impl Get {
                 break;
             }
 
-            let buffer = &read_buffer.leak()[..bytes_read];
+            let buffer = &read_buffer[..bytes_read];
             file.write_all(buffer)?;
             file.flush()?;
 
