@@ -14,7 +14,7 @@ use crate::models;
 use crate::passphrase::Passphrase;
 use crate::reliable_udp::ReliableUdpSocket;
 use crate::utils::{current_unix_millis, init_socket, receive_and_parse_and_expect, serialize_and_send};
-use crate::utils::{DEFAULT_RELAY_HOST, DEFAULT_RELAY_PORT, DEFAULT_BITRATE};
+use crate::utils::{DEFAULT_RELAY_HOST, DEFAULT_RELAY_PORT, DEFAULT_CHUNK_SIZE};
 
 #[derive(Parser, Debug)]
 pub struct Get {
@@ -32,8 +32,8 @@ pub struct Get {
     #[clap(short, long, default_value = "500")]
     delay: u64,
 
-    #[clap(short, long, default_value = DEFAULT_BITRATE)]
-    bitrate: u32,
+    #[clap(short, long, default_value = DEFAULT_CHUNK_SIZE)]
+    chunk_size: u32,
 
     #[clap(short, long, default_value = "false")]
     force: bool,
@@ -41,12 +41,6 @@ pub struct Get {
 
 impl Get {
     pub fn run(&self) -> Result<(), NudgeError> {
-        // Opening the file for writing, creating it if it doesn't exist
-        let mut file = OpenOptions::new()
-            .truncate(false)
-            .write(true)
-            .create(true)
-            .open(&self.out_file)?;
 
         // Connect to the relay server
         let relay_address = format!("{}:{}", self.relay_host, self.relay_port);
@@ -85,6 +79,14 @@ impl Get {
             return Ok(());
         }
 
+        // Opening the file for writing, creating it if it doesn't exist
+        let mut file = OpenOptions::new()
+            .truncate(false)
+            .write(true)
+            .create(true)
+            .open(&self.out_file)?;
+        file.set_len(recv_ack.file_size)?;
+
         println!("Requesting sender to connect to us...");
 
         // ask the sender to connect to us
@@ -102,8 +104,7 @@ impl Get {
         println!("Ready to receive data!");
 
         // Initializing a buffer with size equal to the bitrate
-        let buffer: Vec<u8> = vec![0; self.bitrate as usize];
-        let buffer: &[u8] = buffer.leak();
+        let mut buffer: Vec<u8> = vec![0; self.chunk_size as usize];
 
         // Wrapping the connection with SafeReadWrite for safe reading and writing
         let mut safe_connection = ReliableUdpSocket::new(local_socket);
@@ -113,22 +114,15 @@ impl Get {
             "{} Reading file size...",
             style("[2/3]").bold().dim()
         );
-        let mut length_buffer = [0u8; 8];
-        let length_bytes = safe_connection.read(&mut length_buffer)?.0;
-        let data_length = u64::from_be_bytes([
-            length_bytes[0], length_bytes[1], length_bytes[2], length_bytes[3],
-            length_bytes[4], length_bytes[5], length_bytes[6], length_bytes[7]
-        ]);
-        file.set_len(data_length)?;
 
         println!(
             "{} Receiving {} bytes from peer in {} byte-chunks...",
             style("[3/3]").bold().dim(),
-            data_length,
-            self.bitrate
+            recv_ack.file_size,
+            self.chunk_size
         );
 
-        let progress_bar = ProgressBar::new(data_length);
+        let progress_bar = ProgressBar::new(recv_ack.file_size);
 
         // Used for calculating the total time taken
         let start_time = current_unix_millis();
@@ -137,11 +131,11 @@ impl Get {
         let mut bytes_received: u64 = 0;
 
         // update progress every 25 KiB
-        let update_progress_rate = (1024 * 25) / self.bitrate;
+        let update_progress_rate = (1024 * 25) / self.chunk_size;
         let mut current_progress = 0;
 
         loop {
-            let (read_buffer, bytes_read) = safe_connection.read(buffer)?;
+            let (read_buffer, bytes_read) = safe_connection.read(&mut buffer)?;
             if bytes_read == 0 {
                 progress_bar.finish_with_message("Transfer complete! 🎉");
                 break;

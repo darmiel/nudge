@@ -10,7 +10,7 @@ use crate::{models, utils};
 use crate::error::NudgeError;
 use crate::models::{FileSendAckPayload, SenderConnectToReceiverPayload};
 use crate::reliable_udp::ReliableUdpSocket;
-use crate::utils::{DEFAULT_BITRATE, DEFAULT_RELAY_HOST, DEFAULT_RELAY_PORT, receive_and_parse_and_expect, serialize_and_send};
+use crate::utils::{DEFAULT_CHUNK_SIZE, DEFAULT_RELAY_HOST, DEFAULT_RELAY_PORT, receive_and_parse_and_expect, serialize_and_send};
 use crate::utils::current_unix_millis;
 
 #[derive(Parser, Debug)]
@@ -26,8 +26,8 @@ pub struct Send {
     #[clap(short, long, default_value = "500")]
     delay: u64,
 
-    #[clap(short, long, default_value = DEFAULT_BITRATE)]
-    bitrate: u32,
+    #[clap(short, long, default_value = DEFAULT_CHUNK_SIZE)]
+    chunk_size: u32,
 }
 
 impl Send {
@@ -80,8 +80,7 @@ impl Send {
         println!("Ready to send data!");
 
         // Create a buffer with size based on the bitrate
-        let buffer: Vec<u8> = vec![0; self.bitrate as usize];
-        let mut buffer = buffer.leak();
+        let mut buffer: Vec<u8> = vec![0; self.chunk_size as usize];
 
         // Create a SafeReadWrite wrapper for the connection
         let mut safe_connection = ReliableUdpSocket::new(local_socket);
@@ -89,17 +88,10 @@ impl Send {
 
 
         println!(
-            "{} Sending file size ({} bytes) to peer...",
-            style("[3/4]").bold().dim(),
-            file_length
-        );
-        safe_connection.write_and_flush(&file_length.to_be_bytes(), false, 3000)?;
-
-        println!(
             "{} Sending {} bytes to peer in {} byte-chunks...",
             style("[4/4]").bold().dim(),
             file_length,
-            self.bitrate
+            self.chunk_size
         );
 
         let progress_bar = ProgressBar::new(file_length);
@@ -108,7 +100,7 @@ impl Send {
         let start_time = current_unix_millis();
 
         // update progress every 25 KiB
-        let update_progress_rate = (1024 * 25) / self.bitrate;
+        let update_progress_rate = (1024 * 25) / self.chunk_size;
         let mut current_progress = 0;
 
         loop {
