@@ -7,8 +7,6 @@ use simple_log::LogConfigBuilder;
 use crate::error::Result;
 use crate::commands::{SubCommand, server_command, send_command, get_command};
 
-
-// lib
 mod error;
 mod utils;
 

@@ -22,7 +22,7 @@ pub const DEFAULT_RELAY_HOST: &'static str = "127.0.0.1";
 pub const DEFAULT_RELAY_PORT: &'static str = "4000";
 pub const DEFAULT_CHUNK_SIZE: &'static str = "4096";
 
-#[derive(Serialize, Deserialize, Debug, Ord, PartialEq, PartialOrd, Eq)]
+#[derive(Serialize, Deserialize, Debug, Ord, PartialEq, PartialOrd, Eq, Clone)]
 pub struct AnonymousString(pub Option<String>);
 
 impl Display for AnonymousString {
