@@ -9,10 +9,10 @@ pub mod server_command;
 #[derive(Parser, Debug)]
 #[clap(version = "0.1", author = "darmiel <asdf@qwer.tz>")]
 pub struct RootOpts {
-    #[clap(short = 'x', long, default_value = DEFAULT_RELAY_HOST)]
+    #[clap(short = 'x', long, env = "NUDGE_RELAY_HOST", default_value = DEFAULT_RELAY_HOST)]
     pub(crate) relay_host: String,
 
-    #[clap(short = 'y', long, default_value = DEFAULT_RELAY_PORT)]
+    #[clap(short = 'y', long, env = "NUDGE_RELAY_PORT", default_value = DEFAULT_RELAY_PORT)]
     pub(crate) relay_port: u16,
 
     #[clap(short, long, default_value = "false")]

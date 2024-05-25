@@ -37,6 +37,12 @@ pub enum NudgeError {
 
     #[error("Cannot get hostname")]
     HostnameError,
+
+    #[error("Exited because --no-prompt was passed")]
+    NoPromptExit,
+
+    #[error("Hash mismatch! Expected: {0}, Received: {1}")]
+    HashMismatch(String, String),
 }
 
 pub type Result<T> = std::result::Result<T, NudgeError>;
