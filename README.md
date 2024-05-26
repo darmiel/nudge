@@ -59,7 +59,17 @@ The relay server manages the communication and connects the peers with each othe
 
 You can use the following public server: `new.d2a.io:4000` (no guarantees for availability).
 
-## Building from Source
+## Installation
+
+### Brew
+
+You can install nudge using Homebrew:
+
+```bash
+brew install darmiel/nudge/nudge
+```
+
+### Building from Source
 
 To build Nudge from source, follow these steps:
 
