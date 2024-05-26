@@ -6,12 +6,12 @@ The aim is to enable simple peer-to-peer data transfer, so that the data is not 
 
 ## Demo
 
-https://github.com/darmiel/nudge-ngx/assets/71837281/bfb5c9c8-a4a2-40eb-ba84-141cea2d352c
+https://github.com/darmiel/nudge/assets/71837281/bfb5c9c8-a4a2-40eb-ba84-141cea2d352c
 
 ## Usage
 
 ```
-Usage: nudge-ngx [OPTIONS] <COMMAND>
+Usage: nudge [OPTIONS] <COMMAND>
 
 Global Options:
   -x, --relay-host <RELAY_HOST>  [env: NUDGE_RELAY_HOST=] [default: 127.0.0.1]
@@ -65,8 +65,8 @@ To build Nudge from source, follow these steps:
 
 1. Clone the repository and navigate to the cloned directory:
    ```bash
-   git clone https://github.com/darmiel/nudge-ngx
-   cd nudge-ngx
+   git clone https://github.com/darmiel/nudge
+   cd nudge
    ```
 
 2. Compile the project with Cargo:
@@ -80,7 +80,7 @@ To build Nudge from source, follow these steps:
 > sudo apt install build-essential
 > ```
 
-The executable will be available in `target/release/nudge-ngx`.
+The executable will be available in `target/release/nudge`.
 
 <!--
 ## TODO

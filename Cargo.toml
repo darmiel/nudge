@@ -1,6 +1,8 @@
 [package]
-name = "nudge-ngx"
-version = "0.1.0"
+name = "nudge"
+version = "1.0.0"
+authors = ["darmiel <asdf@qwer.tz"]
+description = "P2P File Transfer from the CLI!"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

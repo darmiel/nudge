@@ -7,7 +7,8 @@ pub mod get_command;
 pub mod server_command;
 
 #[derive(Parser, Debug)]
-#[clap(version = "0.1", author = "darmiel <asdf@qwer.tz>")]
+#[clap(name = "nudge")]
+#[clap(version, about, author)]
 pub struct RootOpts {
     #[clap(short = 'x', long, env = "NUDGE_RELAY_HOST", default_value = DEFAULT_RELAY_HOST)]
     pub(crate) relay_host: String,

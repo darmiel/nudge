@@ -31,20 +31,14 @@ fn main() -> Result<()> {
     simple_log::new(log_config).expect("Failed to initialize logger");
 
     match match &opts.subcmd {
-        SubCommand::Serve(server_opts) => {
-            server_command::run(&opts, &server_opts)
-        }
-        SubCommand::Send(send_opts) => {
-            send_command::run(&opts, &send_opts)
-        }
-        SubCommand::Get(get_opts) => {
-            get_command::run(&opts, &get_opts)
-        }
+        SubCommand::Serve(server_opts) => server_command::run(&opts, &server_opts),
+        SubCommand::Send(send_opts) => send_command::run(&opts, &send_opts),
+        SubCommand::Get(get_opts) => get_command::run(&opts, &get_opts),
     } {
-        Ok(_) => Ok(()),
         Err(e) => {
             error!("Error: {}", e);
             Err(e)
         }
+        _ => Ok(()),
     }
 }
