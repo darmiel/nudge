@@ -234,19 +234,18 @@ pub fn run(root_opts: &RootOpts, get_opts: &GetOpts) -> Result<(), NudgeError> {
         return Ok(());
     }
 
-    let expected_hash = recv_ack.file_hash.0.unwrap();
     println!(
-        "{} Checking file hash... Expected: {}",
+        "{} Checking file hash...",
         style("[~]").bold().yellow(),
-        style(&expected_hash).dim()
     );
 
     file.seek(std::io::SeekFrom::Start(0))?;
     let actual_hash = hash_file_and_seek(&mut file)?;
+    let expected_hash = recv_ack.file_hash.0.unwrap();
 
     if expected_hash != actual_hash {
         println!(
-            "{} Hash mismatch! Expected: {}, Received: {}",
+            "{} Hash mismatch!\n\t\tExpected: {},\n\t\tReceived: {}",
             style("[✗]").bold().red(),
             expected_hash,
             actual_hash
@@ -255,9 +254,8 @@ pub fn run(root_opts: &RootOpts, get_opts: &GetOpts) -> Result<(), NudgeError> {
     }
 
     println!(
-        "{} Hash check successful! ({})",
+        "{} Hash check successful!",
         style("[✔]").bold().green(),
-        expected_hash
     );
 
     Ok(())
