@@ -45,9 +45,8 @@ impl ReliableUdpSocket {
             return Err(NudgeError::BufferSizeLimitExceeded(buffer.len()));
         }
 
-        let mut packet_buffer = Vec::with_capacity(buffer.len() + 3);
-        packet_buffer.extend_from_slice(&[0; 3]); // Prepend three bytes for the packet header
-        packet_buffer.extend_from_slice(buffer);
+        let mut packet_buffer = vec![0; buffer.len() + 3];
+        packet_buffer[3..].copy_from_slice(buffer);
 
         let mut received_data = (Vec::new(), 0);
         let mut should_retry = true;
@@ -56,14 +55,28 @@ impl ReliableUdpSocket {
         while should_retry {
             match self.socket.recv(&mut packet_buffer) {
                 Ok(bytes_read) => {
-                    if bytes_read < 3 { continue; }
-                    let packet_id = u16::from_be_bytes([packet_buffer[0], packet_buffer[1]]);
-                    self.handle_packet(packet_id, &mut packet_buffer, &mut received_data, &mut should_retry, &mut is_catching_up, bytes_read)?;
+                    if bytes_read < 3 {
+                        continue;
+                    }
+                    let packet_id = u16::from_be_bytes(
+                        [packet_buffer[0], packet_buffer[1]]
+                    );
+                    self.handle_packet(
+                        packet_id,
+                        &packet_buffer,
+                        &mut received_data,
+                        &mut should_retry,
+                        &mut is_catching_up,
+                        bytes_read,
+                    )?;
                 }
                 Err(_) => continue,
             }
         }
-        packet_buffer.drain(0..3); // Remove the header
+
+        // Remove the header from the received data
+        packet_buffer.drain(0..3);
+
         received_data.0 = packet_buffer;
         Ok(received_data)
     }
@@ -91,26 +104,29 @@ impl ReliableUdpSocket {
         let packet_index = self.sent_packets_count as u16;
         self.sent_packets_count += 1;
 
-        let mut data_buffer = Vec::from(data);
-        data_buffer.insert(0, packet_type as u8);
-        data_buffer.insert(0, packet_id[1]);
-        data_buffer.insert(0, packet_id[0]); // Prepend packet header
+        let mut data_buffer = Vec::with_capacity(data.len() + 3);
+        data_buffer.extend_from_slice(&packet_id);
+        data_buffer.push(packet_type as u8);
+        data_buffer.extend_from_slice(data);
 
         // Transmit the packet with retries if not acknowledged
         self.transmit_packet(&data_buffer, packet_index, delay, flush, exit_on_lost)
     }
 
     /// Handles received packets, managing acknowledgment responses and detecting packet drops.
-    fn handle_packet(&mut self,
-                     packet_id: u16,
-                     packet_buffer: &mut Vec<u8>,
-                     received_data: &mut (Vec<u8>, usize),
-                     should_retry: &mut bool,
-                     is_catching_up: &mut bool,
-                     bytes_read: usize,
+    fn handle_packet(
+        &mut self,
+        packet_id: u16,
+        packet_buffer: &[u8],
+        received_data: &mut (Vec<u8>, usize),
+        should_retry: &mut bool,
+        is_catching_up: &mut bool,
+        bytes_read: usize,
     ) -> Result<()> {
         if packet_id <= self.received_packets_count as u16 {
-            self.socket.send(&[packet_buffer[0], packet_buffer[1], PacketType::Acknowledgment as u8])?;
+            self.socket.send(
+                &[packet_buffer[0], packet_buffer[1], PacketType::Acknowledgment as u8]
+            )?;
         }
         if packet_id == self.received_packets_count as u16 {
             *should_retry = false;
@@ -125,19 +141,20 @@ impl ReliableUdpSocket {
         Ok(())
     }
 
-    /// Resends packets from `last_transmitted` map based on received requests or packet loss detection.
-    fn transmit_packet(&mut self,
-                       data_buffer: &[u8],
-                       packet_index: u16,
-                       delay: u64,
-                       flush: bool,
-                       exit_on_lost: bool,
+    /// Transmits a packet with retries if not acknowledged.
+    fn transmit_packet(
+        &mut self,
+        data_buffer: &[u8],
+        packet_index: u16,
+        delay: u64,
+        flush: bool,
+        exit_on_lost: bool,
     ) -> Result<()> {
         loop {
             match self.socket.send(data_buffer) {
                 Ok(bytes_sent) => {
-                    if bytes_sent != data_buffer.len() {
-                        continue;
+                    if bytes_sent == data_buffer.len() {
+                        break;
                     }
                 }
                 Err(_) => continue,
@@ -150,9 +167,14 @@ impl ReliableUdpSocket {
     }
 
     /// Waits for an acknowledgment for the specified packet. Handles timeouts and retransmissions.
-    fn wait_for_acknowledgment(&mut self, packet_index: u16, flush: bool, exit_on_lost: bool) -> Result<()> {
-        let mut wait_for_ack = packet_index == 0xffff || flush;
-        self.socket.set_read_timeout(Some(Duration::from_millis(1000))).unwrap();
+    fn wait_for_acknowledgment(
+        &mut self,
+        packet_index: u16,
+        flush: bool,
+        exit_on_lost: bool,
+    ) -> Result<()> {
+        let wait_for_ack = packet_index == 0xffff || flush;
+        self.socket.set_read_timeout(Some(Duration::from_millis(1000)))?;
 
         let mut start_time = current_unix_millis();
         let mut buffer = [0; 3];
@@ -162,7 +184,7 @@ impl ReliableUdpSocket {
             match self.socket.recv(&mut buffer) {
                 Ok(bytes_read) => {
                     if bytes_read != 3 {
-                        continue; // Expecting exactly 3 bytes, retry if not received
+                        continue;
                     }
 
                     match buffer[2] {
@@ -170,15 +192,15 @@ impl ReliableUdpSocket {
                             let acknowledged_packet_id = u16::from_be_bytes([buffer[0], buffer[1]]);
                             self.last_transmitted.remove(&acknowledged_packet_id);
                             if acknowledged_packet_id == packet_index {
-                                wait_for_ack = false;
-                                self.last_transmitted.clear(); // Clearing as all prior must be ACK'd if ordered.
+                                self.last_transmitted.clear();
+                                return Ok(());
                             }
                         }
                         x if x == PacketType::ResendRequest as u8 => {
                             let request_packet_id = u16::from_be_bytes([buffer[0], buffer[1]]);
                             self.handle_resend_request(request_packet_id, &mut is_catching_up);
                         }
-                        _ => continue, // Ignoring unrecognized packet types
+                        _ => continue,
                     }
                 }
                 Err(_) => {
@@ -190,9 +212,9 @@ impl ReliableUdpSocket {
                         println!("WARN: Connection may be disrupted. It's been 10 seconds since the last packet was received. Attempting to resend...");
                         if let Some(data) = self.last_transmitted.get(&packet_index).cloned() {
                             self.resend_packet(&data, &mut start_time);
-                            start_time = current_unix_millis(); // Reset the timer after resending
+                            start_time = current_unix_millis();
                         } else {
-                            break; // Exit loop if the latest packet was ACK'd
+                            break;
                         }
                     }
                 }
@@ -203,11 +225,11 @@ impl ReliableUdpSocket {
 
     /// Handles packet resend requests from the receiver, using the specified packet ID.
     fn handle_resend_request(&mut self, packet_index: u16, is_catching_up: &mut bool) {
-        *is_catching_up = true; // Flagging as catching up due to a resend request.
+        *is_catching_up = true;
 
         // Clone the packet data first to avoid borrowing issues
         if let Some(packet_data) = self.last_transmitted.get(&packet_index).cloned() {
-            let mut current_time = current_unix_millis(); // Get the current time once, before calling resend_packet
+            let mut current_time = current_unix_millis();
             self.resend_packet(&packet_data, &mut current_time);
         }
     }
@@ -267,5 +289,4 @@ mod tests {
         let result = reliable_socket.internal_write(&large_data, PacketType::Write, false, false, 10);
         assert!(matches!(result, Err(NudgeError::DataPacketLimitExceeded(_))));
     }
-
 }

@@ -13,42 +13,33 @@ https://github.com/darmiel/nudge/assets/71837281/bfb5c9c8-a4a2-40eb-ba84-141cea2
 ```
 Usage: nudge [OPTIONS] <COMMAND>
 
-Global Options:
-  -x, --relay-host <RELAY_HOST>  [env: NUDGE_RELAY_HOST=] [default: 127.0.0.1]
-  -y, --relay-port <RELAY_PORT>  [env: NUDGE_RELAY_PORT=] [default: 4000]
-  -v, --verbose
-  -h, --help                     Print help
-  -V, --version                  Print version
-
 Commands:
-  serve
+  * serve
     
-  send [OPTIONS] <FILE>
+  * send [OPTIONS] <FILE>
     -d, --delay <DELAY>            [default: 500]
     -c, --chunk-size <CHUNK_SIZE>  [default: 4096]
-        --hide-hostname            If enabled, won't send the hostname to the receiver
-        --skip-hash                If enabled, won't create a hash of the file
-    -h, --help                     Print help
+        --hide-hostname            Send file as <anonymous>
+        --skip-hash                Don't create a hash of the file
   
-  get [OPTIONS] <PASSPHRASE>
+  * get [OPTIONS] <PASSPHRASE>
     -o, --out-file <OUT_FILE>      Override the output file (optional)
     -d, --delay <DELAY>            [default: 500]
-    -f, --force                    If enabled, won't ask for confirmation before downloading the file
-        --hide-hostname            If enabled, won't send the hostname to the sender
-        --overwrite-file           If enabled, will overwrite the output file if it already exists without asking
-        --no-prompt                If enabled, won't display any prompts and always quit Useful for scripting
-        --skip-hash                If enabled, won't check the hash of the file
+    -f, --force                    Don't ask for confirmation when downloading the file
+        --hide-hostname            Receive file as <anonymous>
+        --overwrite-file           Overwrite the output file without asking
+        --no-prompt                Don't display any prompts and quit (could be useful for scripting)
+        --skip-hash                Don't perform hash check of the downloaded file
     -c, --chunk-size <CHUNK_SIZE>  Chunk size to read from the socket [default: 4096]
-    -h, --help                     Print help
     
-  help   Print this message or the help of the given subcommand(s)
+  * help
 
-Options:
-  -x, --relay-host <RELAY_HOST>  [env: NUDGE_RELAY_HOST=] [default: 127.0.0.1]
-  -y, --relay-port <RELAY_PORT>  [env: NUDGE_RELAY_PORT=] [default: 4000]
-  -v, --verbose
-  -h, --help                     Print help
-  -V, --version                  Print version
+Global Options:
+    -x, --relay-host <RELAY_HOST>  [env: NUDGE_RELAY_HOST=] [default: relay-1.nudge.d2a.io]
+    -y, --relay-port <RELAY_PORT>  [env: NUDGE_RELAY_PORT=] [default: 80]
+    -v, --verbose
+    -h, --help                     Print help
+    -V, --version                  Print version
 ```
 
 ### Server
@@ -106,4 +97,5 @@ The executable will be available in `target/release/nudge`.
 - [x] Option to overwrite file
 - [x] Server should send errors
 - [x] Filename by sender
+- [ ] Chunk size sent by sender
 -->

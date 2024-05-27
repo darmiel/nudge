@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
+use std::str;
 
 use clap::Parser;
 use crate::commands::RootOpts;
@@ -18,7 +19,7 @@ pub fn run(root_opts: &RootOpts, _: &RelayServerOpts) -> Result<()> {
     let mut client_map = HashMap::new();
 
     let bind_addr = format!("{}:{}", root_opts.relay_host, root_opts.relay_port);
-    println!("Starting server on {}", bind_addr);
+    info!("Starting server on {}", bind_addr);
 
     let listener = UdpSocket::bind(&bind_addr)?;
 
@@ -28,8 +29,14 @@ pub fn run(root_opts: &RootOpts, _: &RelayServerOpts) -> Result<()> {
         let (len, addr) = listener.recv_from(&mut buf)?;
         info!("Received {} bytes from {}", len, addr);
 
-        let received_str = std::str::from_utf8(&buf[..len])?;
-        info!("Received Data: {:?}", received_str);
+        let received_str = match str::from_utf8(&buf[..len]) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("({}) Error converting to string: {}", addr, e);
+                continue;
+            }
+        };
+        info!("({}) Received Data: {:?}", addr, received_str);
 
         match handle_message(received_str, &listener, &addr, &passphrase_generator, &mut client_map) {
             Ok(_) => info!("Handled message without error"),
@@ -52,41 +59,21 @@ fn handle_message(
     passphrase_generator: &PassphraseGenerator,
     client_map: &mut HashMap<Passphrase<'static>, FileInfo>,
 ) -> Result<()> {
-    // Sender -> Server; Request Passphrase
-    if received_str.starts_with("S2X_RP ") {
-        handle_sender_request_passphrase_message(
-            &listener,
-            &addr,
-            &received_str[7..],
-            &passphrase_generator,
-            client_map,
-        )?;
-        return Ok(());
+    match received_str.split_whitespace().next() {
+        // Sender -> Server; Request Passphrase
+        Some("S2X_RP") => handle_sender_request_passphrase_message(
+            &listener, &addr, &received_str[7..], &passphrase_generator, client_map,
+        ),
+        // Receiver -> Server; Request File Info
+        Some("R2X_RFI") => handle_receiver_request_file_info(
+            &listener, &addr, &received_str[8..], client_map,
+        ),
+        // Receiver -> Server; Accept Connection
+        Some("R2X_RSC") => handle_receiver_accept(
+            &listener, &addr, &received_str[8..], client_map,
+        ),
+        _ => Err(UnknownCommand)
     }
-
-    // Receiver -> Server; Request File Info
-    if received_str.starts_with("R2X_RFI ") {
-        handle_receiver_request_file_info(
-            &listener,
-            &addr,
-            &received_str[8..],
-            client_map,
-        )?;
-        return Ok(());
-    }
-
-    // send receiver address to sender
-    if received_str.starts_with("R2X_RSC ") {
-        handle_receiver_accept(
-            &listener,
-            &addr,
-            &received_str[8..],
-            client_map,
-        )?;
-        return Ok(());
-    }
-
-    Err(UnknownCommand)
 }
 
 /// Handle a SEND_REQ packet
@@ -115,7 +102,6 @@ fn handle_sender_request_passphrase_message(
     send_passphrase_to_sender(listener, addr, passphrase)
 }
 
-/// Send a SEND_ACK packet
 fn send_passphrase_to_sender(
     listener: &UdpSocket,
     addr: &SocketAddr,
@@ -124,7 +110,6 @@ fn send_passphrase_to_sender(
     let response_payload = X2SPassphraseProvidedMessage { passphrase };
     let response = format!("X2S_PPM {}\n", serde_json::to_string(&response_payload)?);
     listener.send_to(response.as_bytes(), addr)?;
-
     Ok(())
 }
 
@@ -153,13 +138,15 @@ fn send_file_info_to_receiver(
     Ok(())
 }
 
-fn handle_receiver_accept(listener: &UdpSocket,
-                          addr: &SocketAddr,
-                          payload_str: &str,
-                          client_map: &mut HashMap<Passphrase<'static>, FileInfo>,
+fn handle_receiver_accept(
+    listener: &UdpSocket,
+    addr: &SocketAddr,
+    payload_str: &str,
+    client_map: &mut HashMap<Passphrase<'static>, FileInfo>,
 ) -> Result<()> {
     let payload: R2XRequestSenderConnectionMessage = serde_json::from_str(payload_str)?;
 
+    // check if the passphrase exists
     let file_info = match client_map.get_mut(&payload.passphrase) {
         Some(file_info) => file_info,
         None => return Err(NudgeError::PassphraseNotFound),
@@ -167,13 +154,13 @@ fn handle_receiver_accept(listener: &UdpSocket,
 
     // make sure the file hash matches
     if file_info.file_hash == payload.file_hash {
-        println!(
-            "File hash matches, sending sender ({}) to receiver ({})",
-            file_info.sender_addr, addr
+        info!(
+            "({}) File hash matches, sending sender ({}) to receiver ({})",
+            addr, file_info.sender_addr, addr
         );
 
         // Clone the necessary info before removing the entry
-        let sender_addr = file_info.sender_addr.clone();
+        let sender_addr = file_info.sender_addr;
 
         client_map.remove(&payload.passphrase);
 
@@ -183,10 +170,11 @@ fn handle_receiver_accept(listener: &UdpSocket,
     }
 }
 
-fn send_sender_connect_to_receiver(listener: &UdpSocket,
-                                   sender_addr: &SocketAddr,
-                                   receiver_addr: &SocketAddr,
-                                   sender_host: AnonymousString,
+fn send_sender_connect_to_receiver(
+    listener: &UdpSocket,
+    sender_addr: &SocketAddr,
+    receiver_addr: &SocketAddr,
+    sender_host: AnonymousString,
 ) -> Result<()> {
     let response_payload = X2SSenderConnectToReceiverMessage {
         receiver_addr: *receiver_addr,
@@ -194,7 +182,6 @@ fn send_sender_connect_to_receiver(listener: &UdpSocket,
     };
     let response = format!("X2S_SCON {}\n", serde_json::to_string(&response_payload)?);
     listener.send_to(response.as_bytes(), sender_addr)?;
-
     Ok(())
 }
 

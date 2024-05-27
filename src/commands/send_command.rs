@@ -1,13 +1,13 @@
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::net::{Ipv4Addr, UdpSocket};
 
 use clap::Parser;
 use console::style;
 use humansize::{DECIMAL, format_size};
-use crate::commands::RootOpts;
 
-use crate::error::NudgeError;
+use crate::commands::RootOpts;
+use crate::error::Result;
 use crate::models::X2SPassphraseProvidedMessage;
 use crate::models::S2XRequestPassphraseMessage;
 use crate::models::X2SSenderConnectToReceiverMessage;
@@ -16,11 +16,10 @@ use crate::utils::AnonymousString;
 use crate::utils::current_unix_millis;
 use crate::utils::hash_file_and_seek;
 use crate::utils::hide_or_get_hostname;
-use crate::utils::init_socket;
 use crate::utils::new_downloader_progressbar;
-use crate::utils::receive_and_parse_and_expect;
-use crate::utils::serialize_and_send;
 use crate::utils::DEFAULT_CHUNK_SIZE;
+use crate::utils::serialize::{receive_and_parse_and_expect, serialize_and_send};
+use crate::utils::socket::init_socket;
 
 #[derive(Parser, Debug)]
 pub struct SendOpts {
@@ -41,34 +40,23 @@ pub struct SendOpts {
     skip_hash: bool,
 }
 
-pub fn run(root_opts: &RootOpts, send_opts: &SendOpts) -> Result<(), NudgeError> {
+pub fn run(root_opts: &RootOpts, send_opts: &SendOpts) -> Result<()> {
     // check if the file exists and open it
     let mut file = File::open(&send_opts.file)?;
-    let file_name = &send_opts.file.split('/').last().unwrap();
+    let file_name = send_opts.file.split('/').last().unwrap_or_default();
     let file_size = file.metadata()?.len();
 
-    let local_bind_address = (Ipv4Addr::from(0u32), 0);
-    debug!("Binding UDP socket to local address: {:?}", local_bind_address);
-    let socket = UdpSocket::bind(&local_bind_address)?;
-
-    // Connect to relay server
-    let relay_address = format!("{}:{}", root_opts.relay_host, root_opts.relay_port);
-    debug!("Connecting to relay-server: {}...", relay_address);
-    socket.connect(relay_address)?;
+    let socket = bind_socket()?;
+    connect_to_relay_server(&socket, root_opts)?;
 
     // Get the hostname of the sender
     let sender_host = hide_or_get_hostname(send_opts.hide_hostname)?;
     debug!("Sender hostname: {}", sender_host);
 
-    // create a hash of the file
-    let file_hash = if send_opts.skip_hash {
-        AnonymousString(None)
-    } else {
-        debug!("Creating hash of file...");
-        AnonymousString(Some(hash_file_and_seek(&mut file)?))
-    };
+    let file_hash = compute_file_hash(send_opts.skip_hash, &mut file)?;
     debug!("File hash: {}", file_hash);
 
+    // Request a passphrase from the relay-server
     serialize_and_send(&socket, "S2X_RP", &S2XRequestPassphraseMessage {
         sender_host,
         file_size,
@@ -76,16 +64,16 @@ pub fn run(root_opts: &RootOpts, send_opts: &SendOpts) -> Result<(), NudgeError>
         file_name: file_name.to_string(),
     })?;
 
-    let send_ack: X2SPassphraseProvidedMessage = receive_and_parse_and_expect(
+    // (Hopefully) receive the passphrase from the relay-server
+    let passphrase_message: X2SPassphraseProvidedMessage = receive_and_parse_and_expect(
         &socket,
         "X2S_PPM",
     )?;
 
-    // Print the passphrase to the user
     println!(
         "{} Passphrase: {}",
         style("[✔]").bold().green(),
-        style(&send_ack.passphrase).cyan()
+        style(&passphrase_message.passphrase).cyan()
     );
 
     debug!("Waiting for connection request...");
@@ -106,9 +94,73 @@ pub fn run(root_opts: &RootOpts, send_opts: &SendOpts) -> Result<(), NudgeError>
     init_socket(&socket)?;
     debug!("Ready to send data!");
 
-    // wrap the socket in a "reliable udp socket"
-    let mut safe_connection = ReliableUdpSocket::new(socket);
+    send_file(&socket, &mut file, send_opts, file_size)?;
+    Ok(())
+}
 
+/// Binds a UDP socket to a local address
+///
+/// # Errors
+///
+/// Returns `NudgeError::Io` if binding fails
+fn bind_socket() -> Result<UdpSocket> {
+    let local_bind_address = (Ipv4Addr::from(0u32), 0);
+    debug!("Binding UDP socket to local address: {:?}", local_bind_address);
+    Ok(UdpSocket::bind(&local_bind_address)?)
+}
+
+/// Connects the UDP socket to the relay server
+///
+/// # Arguments
+///
+/// * `socket` - The UDP socket
+/// * `root_opts` - Root options containing relay host and port
+///
+/// # Errors
+///
+/// Returns `NudgeError::Io` if connection fails
+fn connect_to_relay_server(socket: &UdpSocket, root_opts: &RootOpts) -> Result<()> {
+    let relay_address = format!("{}:{}", root_opts.relay_host, root_opts.relay_port);
+    debug!("Connecting to relay-server: {}...", relay_address);
+    Ok(socket.connect(&relay_address)?)
+}
+
+/// Computes the hash of the file if not skipped
+///
+/// # Arguments
+///
+/// * `skip_hash` - Boolean flag to skip hashing
+/// * `file` - Mutable reference to the file to be hashed
+///
+/// # Errors
+///
+/// Returns `NudgeError::Io` if hashing or seeking fails
+fn compute_file_hash(skip_hash: bool, file: &mut File) -> Result<AnonymousString> {
+    if skip_hash {
+        Ok(AnonymousString(None))
+    } else {
+        debug!("Creating hash of file...");
+        let hash = hash_file_and_seek(file)?;
+        file.seek(std::io::SeekFrom::Start(0))?;
+        Ok(AnonymousString(Some(hash)))
+    }
+}
+
+
+/// Sends the file to the peer in chunks
+///
+/// # Arguments
+///
+/// * `socket` - The UDP socket
+/// * `file` - Mutable reference to the file to be sent
+/// * `send_opts` - Send options containing delay, chunk size, etc.
+/// * `file_size` - Size of the file to be sent
+///
+/// # Errors
+///
+/// Returns `NudgeError` if any step of the sending process fails
+fn send_file(socket: &UdpSocket, file: &mut File, send_opts: &SendOpts, file_size: u64) -> Result<()> {
+    let mut safe_connection = ReliableUdpSocket::new(socket.try_clone()?);
     println!(
         "{} Sending {} bytes (chunk-size: {})...",
         style("[~]").bold().yellow(),

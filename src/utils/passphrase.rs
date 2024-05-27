@@ -17,6 +17,12 @@ impl<'a> From<&'a str> for Passphrase<'a> {
     }
 }
 
+impl<'a> From<String> for Passphrase<'a> {
+    fn from(s: String) -> Self {
+        Passphrase(Cow::Owned(s))
+    }
+}
+
 impl Display for Passphrase<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -26,16 +32,28 @@ impl Display for Passphrase<'_> {
 impl PassphraseGenerator {
     const AVG_WORD_SIZE: usize = 5;
 
-    /// Create a new PassphraseGenerator
-    /// It will read the file `english-medium.txt` and store the lines in a vector
+    /// Creates a new PassphraseGenerator.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(PassphraseGenerator)` - If the file is read successfully.
+    /// * `Err` - If there is an error reading the file.
     pub fn new() -> Result<Self> {
         let content = include_str!("../english-medium.txt");
         let lines: Vec<String> = content.lines().map(str::to_owned).collect();
         Ok(PassphraseGenerator(lines))
     }
 
-    /// Generate a passphrase with a given number of words
+    /// Generates a passphrase with a given number of words.
     ///
+    /// # Arguments
+    ///
+    /// * `word_count` - The number of words in the passphrase.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Passphrase)` - If the word count is greater than zero.
+    /// * `None` - If the word count is zero.
     pub fn generate_with_count(&self, word_count: usize) -> Option<Passphrase<'static>> {
         if word_count == 0 {
             return None;
@@ -57,7 +75,12 @@ impl PassphraseGenerator {
         Some(Passphrase(Cow::Owned(passphrase)))
     }
 
-    /// Generate a passphrase with 3 words
+    /// Generates a passphrase with 3 words.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Passphrase)` - The generated passphrase.
+    /// * `None` - If there is an error generating the passphrase.
     pub fn generate(&self) -> Option<Passphrase<'static>> {
         self.generate_with_count(3)
     }

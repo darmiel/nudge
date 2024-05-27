@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::io::{Seek, Write};
 use std::net::{Ipv4Addr, UdpSocket};
@@ -18,12 +17,11 @@ use crate::utils::passphrase::Passphrase;
 use crate::utils::reliable_udp::ReliableUdpSocket;
 use crate::utils::{current_unix_millis, hash_file_and_seek};
 use crate::utils::hide_or_get_hostname;
-use crate::utils::init_socket;
 use crate::utils::new_downloader_progressbar;
 use crate::utils::question_theme;
-use crate::utils::receive_and_parse_and_expect;
-use crate::utils::serialize_and_send;
 use crate::utils::DEFAULT_CHUNK_SIZE;
+use crate::utils::serialize::{receive_and_parse_and_expect, serialize_and_send};
+use crate::utils::socket::init_socket;
 
 #[derive(Parser, Debug)]
 pub struct GetOpts {
@@ -50,7 +48,8 @@ pub struct GetOpts {
     overwrite_file: bool,
 
     /// If enabled, won't display any prompts and always quit
-    /// Useful for scripting
+    ///
+    /// (useful for scripting)
     #[clap(long, default_value = "false")]
     no_prompt: bool,
 
@@ -63,6 +62,8 @@ pub struct GetOpts {
     chunk_size: u32,
 }
 
+
+/// Run the `get` command to download a file using the provided options.
 pub fn run(root_opts: &RootOpts, get_opts: &GetOpts) -> Result<(), NudgeError> {
     let local_bind_address = (Ipv4Addr::from(0u32), 0);
     debug!("Binding UDP socket to local address: {:?}", local_bind_address);
@@ -72,42 +73,38 @@ pub fn run(root_opts: &RootOpts, get_opts: &GetOpts) -> Result<(), NudgeError> {
     debug!("Connecting to relay-server: {}...", relay_address);
     socket.connect(relay_address)?;
 
-    // RECV_REQ
-    let passphrase = Passphrase(Cow::Owned(get_opts.passphrase.clone()));
+    // Send request for file information
+    let passphrase = Passphrase::from(get_opts.passphrase.clone());
     debug!("Sending R2XRequestFileInfoMessage with passphrase: {}...", passphrase.0);
     serialize_and_send(&socket, "R2X_RFI", &R2XRequestFileInfoMessage {
         passphrase: passphrase.clone(),
     })?;
 
     debug!("Waiting for FileInfo...");
-    let recv_ack: FileInfo = receive_and_parse_and_expect(&socket, "X2R_AFI")?;
-    debug!("Received FileInfo: {:?}", recv_ack);
+    let file_info: FileInfo = receive_and_parse_and_expect(&socket, "X2R_AFI")?;
+    debug!("Received FileInfo: {:?}", file_info);
 
-    // display file information
     println!(
         "{} Meta: {} by {} [{}]",
         style("[✔]").bold().green(),
-        style(&recv_ack.file_name).yellow(),
-        style(&recv_ack.sender_host).cyan(),
-        format_size(recv_ack.file_size, DECIMAL)
+        style(&file_info.file_name).yellow(),
+        style(&file_info.sender_host).cyan(),
+        format_size(file_info.file_size, DECIMAL)
     );
 
-    let out_file_name = if let Some(out_file) = &get_opts.out_file {
-        out_file.as_str()
-    } else {
-        // if the output file is not specified, use the file name from the sender
-        // this is the last part of the file path to prevent directory traversal
-        recv_ack.file_name.split("/").last().expect("File name is empty")
-    };
+    let out_file_name = get_opts.out_file.as_deref().unwrap_or_else(|| {
+        // Use the file name from the sender if output file is not specified
+        file_info.file_name.split("/").last().expect("File name is empty")
+    });
 
-    // if the file already exists, ask if we want to overwrite it
+    // Check if the file already exists and ask for confirmation to overwrite
     if !get_opts.overwrite_file && Path::new(out_file_name).exists() {
         if get_opts.no_prompt {
             println!("File {} already exists. Use -o <file> to specify a different output file.", out_file_name);
             return Err(NudgeError::NoPromptExit);
         }
 
-        // ask for confirmation to overwrite the file
+        // Ask for confirmation to overwrite the file
         if !Confirm::with_theme(&question_theme())
             .with_prompt(format!("File {} already exists. Overwrite?", out_file_name))
             .interact()
@@ -118,7 +115,7 @@ pub fn run(root_opts: &RootOpts, get_opts: &GetOpts) -> Result<(), NudgeError> {
         }
     }
 
-    // ask if we really want to download the file
+    // Ask for confirmation to download the file
     if !get_opts.force {
         // never download if not -f and --no-prompt passed
         if get_opts.no_prompt {
@@ -137,58 +134,57 @@ pub fn run(root_opts: &RootOpts, get_opts: &GetOpts) -> Result<(), NudgeError> {
         }
     }
 
-    // Opening the file for writing, creating it if it doesn't exist
     let mut file = OpenOptions::new()
         .truncate(false)
         .write(true)
         .create(true)
         .read(true)
         .open(out_file_name)?;
-    file.set_len(recv_ack.file_size)?;
+    file.set_len(file_info.file_size)?;
 
-    // ask the sender to connect to us
+    // Request sender to connect
     let hostname = hide_or_get_hostname(get_opts.hide_hostname)?;
     debug!(
-            "Requesting sender to connect to us ({}) via R2XRequestSenderConnectionMessage...",
-            hostname
-        );
+        "Requesting sender to connect to us ({})...",
+        hostname
+    );
     serialize_and_send(&socket, "R2X_RSC", &R2XRequestSenderConnectionMessage {
         passphrase,
-        file_hash: recv_ack.file_hash.clone(),
+        file_hash: file_info.file_hash.clone(),
         receiver_host: hostname,
     })?;
 
     println!(
         "{} Connecting to {} ({})...",
         style("[~]").bold().yellow(),
-        style(&recv_ack.sender_host).cyan(),
-        style(&recv_ack.sender_addr).dim()
+        style(&file_info.sender_host).cyan(),
+        style(&file_info.sender_addr).dim()
     );
-    socket.connect(recv_ack.sender_addr)?;
+    socket.connect(file_info.sender_addr)?;
 
     debug!("Initializing socket connection...");
     init_socket(&socket)?;
     debug!("Ready to receive data!");
 
-    // wrap the socket in a "reliable udp socket"
+    // Wrap the socket in a "reliable udp socket"
     let mut safe_connection = ReliableUdpSocket::new(socket);
 
     println!(
         "{} Receiving {} (chunk-size: {})...",
         style("[~]").bold().yellow(),
-        format_size(recv_ack.file_size, DECIMAL),
+        format_size(file_info.file_size, DECIMAL),
         style(format_size(get_opts.chunk_size, DECIMAL)).dim()
     );
 
-    let progress_bar = new_downloader_progressbar(recv_ack.file_size);
+    let progress_bar = new_downloader_progressbar(file_info.file_size);
 
     // Used for calculating the total time taken
     let start_time = current_unix_millis();
 
-    // Used for updating the progressbar
+    // Used for updating the progress bar
     let mut bytes_received: u64 = 0;
 
-    // update progress every 25 KiB
+    // Update progress every 25 KiB
     let update_progress_rate = (1024 * 25) / get_opts.chunk_size;
     let mut current_progress = 0;
 
@@ -224,9 +220,9 @@ pub fn run(root_opts: &RootOpts, get_opts: &GetOpts) -> Result<(), NudgeError> {
         return Ok(());
     }
 
-    // if no hash was sent, display warning to the user
+    // If no hash was sent, display warning to the user
     // we only treat this case as a warning, not an error
-    if recv_ack.file_hash.0.is_none() {
+    if file_info.file_hash.0.is_none() {
         println!(
             "{} Sender did not send a hash! Skipping hash check...",
             style("[✗]").bold().red()
@@ -241,7 +237,9 @@ pub fn run(root_opts: &RootOpts, get_opts: &GetOpts) -> Result<(), NudgeError> {
 
     file.seek(std::io::SeekFrom::Start(0))?;
     let actual_hash = hash_file_and_seek(&mut file)?;
-    let expected_hash = recv_ack.file_hash.0.unwrap();
+    file.seek(std::io::SeekFrom::Start(0))?;
+
+    let expected_hash = file_info.file_hash.0.unwrap();
 
     if expected_hash != actual_hash {
         println!(

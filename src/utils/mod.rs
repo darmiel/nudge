@@ -1,22 +1,19 @@
 use std::fmt::{Display, Formatter};
 use std::fs::File;
-use std::io::{Read, Seek };
-use std::net::UdpSocket;
-use std::thread;
-use std::time::Duration;
+use std::io::Read;
 use std::time::SystemTime;
-
 use console::style;
 use dialoguer::theme::ColorfulTheme;
 use gethostname::gethostname;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
-use serde::de::DeserializeOwned;
 
 use crate::error::{NudgeError, Result};
 
 pub mod passphrase;
 pub mod reliable_udp;
+pub mod socket;
+pub mod serialize;
 
 #[cfg(debug_assertions)]
 pub const DEFAULT_RELAY_HOST: &str = "127.0.0.1";
@@ -30,19 +27,25 @@ pub const DEFAULT_RELAY_PORT: &str = "80";
 
 pub const DEFAULT_CHUNK_SIZE: &str = "4096";
 
+/// A wrapper around a string that can be displayed as "<anonymous>" if the string is None
 #[derive(Serialize, Deserialize, Debug, Ord, PartialEq, PartialOrd, Eq, Clone)]
 pub struct AnonymousString(pub Option<String>);
 
 impl Display for AnonymousString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            Some(hostname) => write!(f, "{}", hostname),
-            None => write!(f, "<anonymous>")
+        if let Some(ref hostname) = self.0 {
+            f.write_str(hostname)
+        } else {
+            f.write_str("<anonymous>")
         }
     }
 }
 
-/// Function to get the current time in milliseconds since the Unix epoch
+/// Returns the current time in milliseconds since the Unix epoch.
+///
+/// # Returns
+///
+/// `u64` - The current time in milliseconds.
 pub fn current_unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -50,85 +53,39 @@ pub fn current_unix_millis() -> u64 {
         .as_millis() as u64
 }
 
-pub fn init_socket(socket: &UdpSocket) -> Result<()> {
-    // Set socket read and write timeouts
-    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    socket.set_write_timeout(Some(Duration::from_secs(1)))?;
-
-    // Synchronize to the next 500ms boundary
-    thread::sleep(Duration::from_millis(500 - (current_unix_millis() % 500)));
-
-    // Send packets to establish the connection
-    for _ in 0..40 {
-        let start_time = current_unix_millis();
-        let _ = socket.send(&[0]);
-        thread::sleep(Duration::from_millis((50 - (current_unix_millis() - start_time))
-            .max(0)));
-    }
-
-    // Wait for the connection to be established
-    let mut receive_result = Ok(1);
-    while receive_result.is_ok() && receive_result.unwrap() == 1 {
-        receive_result = socket.recv(&mut [0, 0]);
-    }
-    socket.send(&[0, 0])?;
-    socket.send(&[0, 0])?;
-
-    receive_result = Ok(1);
-    while receive_result.is_ok() && receive_result.unwrap() != 2 {
-        receive_result = socket.recv(&mut [0, 0]);
-    }
-    receive_result = Ok(1);
-    while receive_result.is_ok() && receive_result.unwrap() == 2 {
-        receive_result = socket.recv(&mut [0, 0]);
-    }
-
-    Ok(())
-}
-
-pub fn serialize_and_send(connection: &UdpSocket, prefix: &str, data: &impl Serialize) -> std::result::Result<(), NudgeError> {
-    let serialized_data = serde_json::to_string(data)?;
-    let message = format!("{} {}", prefix, serialized_data);
-    connection.send(message.as_bytes())?;
-    Ok(())
-}
-
-pub fn receive_and_parse_and_expect<T: DeserializeOwned>(connection: &UdpSocket, expected_prefix: &str) -> std::result::Result<T, NudgeError> {
-    let mut buffer = [0u8; 1024];
-    connection.recv(&mut buffer)?;
-
-    let mut buffer_vec = buffer.to_vec();
-    buffer_vec.retain(|&byte| byte != 0);
-
-    let message = String::from_utf8_lossy(&buffer_vec);
-    if message.starts_with("ERROR ") {
-        return Err(NudgeError::ServerError(message.to_string()));
-    }
-
-    let prefix = message.split_whitespace().next().unwrap();
-    if prefix != expected_prefix {
-        return Err(NudgeError::ReceiveExpectationNotMet(
-            expected_prefix.to_string(),
-            prefix.to_string(),
-        ));
-    }
-
-    // remove leading/trailing whitespace
-    let part = message[expected_prefix.len()..].trim();
-    Ok(serde_json::from_str(part)?)
-}
-
+/// Retrieves the hostname of the system.
+///
+/// # Returns
+///
+/// `Result<String>` - The hostname as a `String` on success, or a `NudgeError::HostnameError` on failure.
 pub fn get_hostname() -> Result<String> {
-    match gethostname().into_string() {
-        Ok(hostname) => Ok(hostname),
-        Err(_) => Err(NudgeError::HostnameError),
-    }
+    gethostname()
+        .into_string()
+        .map_err(|_| NudgeError::HostnameError)
 }
 
+/// Returns either an anonymous string or the hostname based on the `hide` parameter.
+///
+/// # Arguments
+///
+/// * `hide` - A boolean indicating whether to hide the hostname.
+///
+/// # Returns
+///
+/// `Result<AnonymousString>` - An `AnonymousString` containing either `None` if hidden or `Some(hostname)` if not.
 pub fn hide_or_get_hostname(hide: bool) -> Result<AnonymousString> {
     Ok(AnonymousString(if hide { None } else { Some(get_hostname()?) }))
 }
 
+/// Hashes the contents of a file using the BLAKE3 hashing algorithm and resets the file's cursor to the start.
+///
+/// # Arguments
+///
+/// * `file` - A mutable reference to the file to be hashed.
+///
+/// # Returns
+///
+/// `Result<String>` - The hexadecimal hash string of the file contents.
 pub fn hash_file_and_seek(file: &mut File) -> Result<String> {
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0; 8192];
@@ -141,18 +98,31 @@ pub fn hash_file_and_seek(file: &mut File) -> Result<String> {
         hasher.update(&buffer[..bytes_read]);
     }
 
-    file.seek(std::io::SeekFrom::Start(0))?;
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// Creates a customized theme for prompts.
+///
+/// # Returns
+///
+/// `ColorfulTheme` - A theme with customized prompt, success, and error prefixes.
 pub fn question_theme() -> ColorfulTheme {
-    let mut colorful = ColorfulTheme::default();
-    colorful.prompt_prefix = style("[?]".to_string()).for_stderr().dim();
-    colorful.success_prefix = style("[✔]".to_string()).for_stderr().bold().green();
-    colorful.error_prefix = style("[✗]".to_string()).for_stderr().bold().red();
-    colorful
+    let mut theme = ColorfulTheme::default();
+    theme.prompt_prefix = style("[?]".to_string()).for_stderr().dim();
+    theme.success_prefix = style("[✔]".to_string()).for_stderr().bold().green();
+    theme.error_prefix = style("[✗]".to_string()).for_stderr().bold().red();
+    theme
 }
 
+/// Creates a new progress bar with a specified length and custom style.
+///
+/// # Arguments
+///
+/// * `length` - The total length of the progress bar.
+///
+/// # Returns
+///
+/// `ProgressBar` - A progress bar configured with a custom style and prefix.
 pub fn new_downloader_progressbar(len: u64) -> ProgressBar {
     let progress_bar = ProgressBar::new(len)
         .with_prefix("[>]");
